@@ -49,8 +49,15 @@ class NotifyServer:
                     self._write_json(400, {"ok": False, "error": "json must be object"})
                     return
 
-                for hook in server._hooks:
-                    hook(payload)
+                try:
+                    for hook in server._hooks:
+                        hook(payload)
+                except ValueError as exc:
+                    self._write_json(400, {"ok": False, "error": str(exc)})
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    self._write_json(500, {"ok": False, "error": f"hook failed: {exc}"})
+                    return
 
                 self._write_json(200, {"ok": True})
 
