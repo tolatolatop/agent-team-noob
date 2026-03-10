@@ -45,6 +45,9 @@ class FakeClaudeClient:
         return None
 
     async def query(self, stream_input) -> None:
+        if isinstance(stream_input, str):
+            self.query_contents.append(stream_input)
+            return
         async for event in stream_input:
             message = event.get("message", {})
             self.query_contents.append(message.get("content", ""))
@@ -53,6 +56,51 @@ class FakeClaudeClient:
         batch = FakeClaudeClient.response_batches.pop(0)
         for item in batch:
             yield item
+
+
+class FakeTextBlock:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class FakeThinkingBlock:
+    def __init__(self, thinking: str, signature: str = "sig") -> None:
+        self.thinking = thinking
+        self.signature = signature
+
+
+class FakeToolUseBlock:
+    def __init__(self, block_id: str, name: str, input_data: dict[str, Any]) -> None:
+        self.id = block_id
+        self.name = name
+        self.input = input_data
+
+
+class FakeToolResultBlock:
+    def __init__(self, tool_use_id: str, content: Any, is_error: bool = False) -> None:
+        self.tool_use_id = tool_use_id
+        self.content = content
+        self.is_error = is_error
+
+
+class FakeAssistantMessage:
+    def __init__(self, content: list[Any], model: str = "test-model") -> None:
+        self.content = content
+        self.model = model
+
+
+class FakeSystemMessage:
+    def __init__(self, subtype: str, data: dict[str, Any]) -> None:
+        self.subtype = subtype
+        self.data = data
+
+
+class FakeResultMessage:
+    def __init__(self, session_id: str, result: str, is_error: bool = False) -> None:
+        self.session_id = session_id
+        self.result = result
+        self.is_error = is_error
+        self.subtype = "success"
 
 
 def test_create_notify_hook_default_pipeline_enqueues() -> None:
@@ -98,8 +146,28 @@ def test_worker_loop_persists_messages_and_session(tmp_path: Path, monkeypatch) 
     )
 
     FakeClaudeClient.instances = []
-    FakeClaudeClient.response_batches = [[{"type": "system", "session_id": "sess-1"}]]
+    FakeClaudeClient.response_batches = [
+        [
+            FakeSystemMessage("init", {"session_id": "sess-1"}),
+            FakeAssistantMessage(
+                [
+                    FakeThinkingBlock("reasoning"),
+                    FakeToolUseBlock("tool-1", "Read", {"file_path": "a.txt"}),
+                    FakeToolResultBlock("tool-1", "ok"),
+                    FakeTextBlock("final answer"),
+                ]
+            ),
+            FakeResultMessage("sess-1", "done"),
+        ]
+    ]
     monkeypatch.setattr(agent, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(agent, "AssistantMessage", FakeAssistantMessage)
+    monkeypatch.setattr(agent, "SystemMessage", FakeSystemMessage)
+    monkeypatch.setattr(agent, "ResultMessage", FakeResultMessage)
+    monkeypatch.setattr(agent, "TextBlock", FakeTextBlock)
+    monkeypatch.setattr(agent, "ThinkingBlock", FakeThinkingBlock)
+    monkeypatch.setattr(agent, "ToolUseBlock", FakeToolUseBlock)
+    monkeypatch.setattr(agent, "ToolResultBlock", FakeToolResultBlock)
 
     asyncio.run(
         agent.worker_loop(
@@ -111,12 +179,14 @@ def test_worker_loop_persists_messages_and_session(tmp_path: Path, monkeypatch) 
     )
 
     lines = message_log.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) >= 2
+    assert len(lines) >= 5
     first = json.loads(lines[0])
-    second = json.loads(lines[1])
-    assert first["type"] == "user"
-    assert second["type"] == "assistant"
-    assert second["session_id"] == "sess-1"
+    assert first["type"] == "query"
+    event_types = [json.loads(line)["type"] for line in lines]
+    assert "ai_message" in event_types
+    assert "thinking_message" in event_types
+    assert "tool_call_message" in event_types
+    assert "tool_result_message" in event_types
 
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state["session_id"] == "sess-1"
@@ -139,9 +209,16 @@ def test_worker_loop_restart_loads_session_and_compacts_once(
     FakeClaudeClient.instances = []
     FakeClaudeClient.response_batches = [
         [],
-        [{"type": "system", "session_id": "sess-new"}],
+        [FakeSystemMessage("init", {"session_id": "sess-new"})],
     ]
     monkeypatch.setattr(agent, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(agent, "AssistantMessage", FakeAssistantMessage)
+    monkeypatch.setattr(agent, "SystemMessage", FakeSystemMessage)
+    monkeypatch.setattr(agent, "ResultMessage", FakeResultMessage)
+    monkeypatch.setattr(agent, "TextBlock", FakeTextBlock)
+    monkeypatch.setattr(agent, "ThinkingBlock", FakeThinkingBlock)
+    monkeypatch.setattr(agent, "ToolUseBlock", FakeToolUseBlock)
+    monkeypatch.setattr(agent, "ToolResultBlock", FakeToolResultBlock)
 
     asyncio.run(
         agent.worker_loop(
@@ -160,3 +237,41 @@ def test_worker_loop_restart_loads_session_and_compacts_once(
 
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state["session_id"] == "sess-new"
+
+
+def test_build_hooks_writes_pre_post_failure(tmp_path: Path) -> None:
+    message_log = tmp_path / "agent_messages.jsonl"
+    hooks = agent.build_hooks(message_log)
+    context = type("Ctx", (), {"session_id": "sess-hook", "cwd": "/tmp"})()
+
+    asyncio.run(
+        hooks["PreToolUse"][0].hooks[0](
+            {"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {}},
+            "tool-1",
+            context,
+        )
+    )
+    asyncio.run(
+        hooks["PostToolUse"][0].hooks[0](
+            {"hook_event_name": "PostToolUse", "tool_name": "Read", "tool_response": "ok"},
+            "tool-1",
+            context,
+        )
+    )
+    asyncio.run(
+        hooks["PostToolUseFailure"][0].hooks[0](
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "tool_name": "Read",
+                "error": "boom",
+            },
+            "tool-1",
+            context,
+        )
+    )
+
+    lines = [json.loads(line) for line in message_log.read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["type"] == "tool_call_message"
+    assert lines[1]["type"] == "tool_result_message"
+    assert lines[2]["type"] == "tool_result_message"
+    assert lines[0]["session_id"] == "sess-hook"

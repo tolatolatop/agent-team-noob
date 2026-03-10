@@ -9,7 +9,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    HookMatcher,
+    ResultMessage,
+    SystemMessage,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 
 from .core import NotifyServer
 
@@ -35,6 +46,25 @@ def append_jsonl(path: Path, event: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def write_message_event(
+    path: Path,
+    event_type: str,
+    payload: dict[str, Any],
+    state: dict[str, Any],
+    pipeline: str = DEFAULT_PIPELINE,
+) -> None:
+    append_jsonl(
+        path,
+        {
+            "ts": utc_now_iso(),
+            "type": event_type,
+            "pipeline": pipeline,
+            "session_id": state.get("session_id"),
+            "payload": payload,
+        },
+    )
 
 
 def load_state(path: Path) -> dict[str, Any]:
@@ -104,11 +134,62 @@ def load_options(path: Path) -> ClaudeAgentOptions:
         return ClaudeAgentOptions.from_json(f.read())
 
 
-def build_default_options() -> ClaudeAgentOptions:
+def build_hooks(message_log_path: Path):
+    async def audit_hook(input_data: Any, tool_use_id: Any, context: Any) -> dict[str, Any]:
+        event_name = input_data.get("hook_event_name", "")
+        tool_name = input_data.get("tool_name")
+        payload = {
+            "source": "hook",
+            "hook_event_name": event_name,
+            "tool_use_id": tool_use_id,
+            "tool_name": tool_name,
+            "input_data": input_data,
+            "context": {
+                "session_id": getattr(context, "session_id", None),
+                "cwd": getattr(context, "cwd", None),
+            },
+        }
+        if event_name == "PreToolUse":
+            append_jsonl(
+                message_log_path,
+                {
+                    "ts": utc_now_iso(),
+                    "type": "tool_call_message",
+                    "pipeline": DEFAULT_PIPELINE,
+                    "session_id": getattr(context, "session_id", None),
+                    "payload": payload,
+                },
+            )
+        elif event_name in {"PostToolUse", "PostToolUseFailure"}:
+            append_jsonl(
+                message_log_path,
+                {
+                    "ts": utc_now_iso(),
+                    "type": "tool_result_message",
+                    "pipeline": DEFAULT_PIPELINE,
+                    "session_id": getattr(context, "session_id", None),
+                    "payload": payload,
+                },
+            )
+        return {}
+
+    return {
+        "PreToolUse": [HookMatcher(matcher=".*", hooks=[audit_hook])],
+        "PostToolUse": [HookMatcher(matcher=".*", hooks=[audit_hook])],
+        "PostToolUseFailure": [HookMatcher(matcher=".*", hooks=[audit_hook])],
+    }
+
+
+def build_default_options(message_log_path: Path | None = None) -> ClaudeAgentOptions:
+    hooks = (
+        build_hooks(message_log_path)
+        if message_log_path is not None
+        else {"PreToolUse": [HookMatcher(matcher=".*", hooks=[tool_hook])]}
+    )
     return ClaudeAgentOptions(
         allowed_tools=["Read", "Grep"],
         permission_mode="acceptEdits",
-        hooks={"PreToolUse": [HookMatcher(matcher=".*", hooks=[tool_hook])]},
+        hooks=hooks,
     )
 
 
@@ -134,11 +215,9 @@ async def maybe_compact_once(client: ClaudeSDKClient) -> None:
         return
 
     # Fallback: use slash command to ensure startup compact is executed once.
-    compact_stream = build_single_message_stream("/compact")
-    compact_task = asyncio.create_task(client.query(compact_stream))
+    await client.query("/compact")
     async for _ in client.receive_response():
         pass
-    await compact_task
     logger.info("compact finished once at startup (slash command)")
 
 
@@ -161,34 +240,85 @@ async def run_agent_query_receive(
     message_log_path: Path,
     state: dict[str, Any],
 ) -> None:
-    stream_input = build_single_message_stream(content)
-    append_jsonl(
+    write_message_event(
         message_log_path,
-        {
-            "ts": utc_now_iso(),
-            "type": "user",
-            "pipeline": DEFAULT_PIPELINE,
-            "content": content,
-            "session_id": state.get("session_id"),
-        },
+        "query",
+        {"content": content},
+        state,
     )
-    query_task = asyncio.create_task(client.query(stream_input))
+    await client.query(content)
     async for response in client.receive_response():
         response_data = normalize_message(response)
+        if isinstance(response, SystemMessage):
+            system_session_id = response.data.get("session_id")
+            if isinstance(system_session_id, str) and system_session_id:
+                state["session_id"] = system_session_id
+        if isinstance(response, ResultMessage) and response.session_id:
+            state["session_id"] = response.session_id
         maybe_session_id = extract_session_id(response_data)
         if maybe_session_id:
             state["session_id"] = maybe_session_id
-        append_jsonl(
-            message_log_path,
-            {
-                "ts": utc_now_iso(),
-                "type": "assistant",
-                "pipeline": DEFAULT_PIPELINE,
-                "message": response_data,
-                "session_id": state.get("session_id"),
-            },
-        )
-    await query_task
+
+        if isinstance(response, AssistantMessage):
+            for block in response.content:
+                if isinstance(block, TextBlock):
+                    write_message_event(
+                        message_log_path,
+                        "ai_message",
+                        {"text": block.text, "model": response.model},
+                        state,
+                    )
+                elif isinstance(block, ThinkingBlock):
+                    write_message_event(
+                        message_log_path,
+                        "thinking_message",
+                        {"thinking": block.thinking, "signature": block.signature},
+                        state,
+                    )
+                elif isinstance(block, ToolUseBlock):
+                    write_message_event(
+                        message_log_path,
+                        "tool_call_message",
+                        {"id": block.id, "name": block.name, "input": block.input},
+                        state,
+                    )
+                elif isinstance(block, ToolResultBlock):
+                    write_message_event(
+                        message_log_path,
+                        "tool_result_message",
+                        {
+                            "tool_use_id": block.tool_use_id,
+                            "content": block.content,
+                            "is_error": block.is_error,
+                        },
+                        state,
+                    )
+        elif isinstance(response, ResultMessage):
+            write_message_event(
+                message_log_path,
+                "ai_message",
+                {
+                    "result": response.result,
+                    "is_error": response.is_error,
+                    "subtype": response.subtype,
+                },
+                state,
+            )
+        elif isinstance(response, SystemMessage):
+            write_message_event(
+                message_log_path,
+                "system_message",
+                {"subtype": response.subtype, "data": response.data},
+                state,
+            )
+        else:
+            # Fallback for untyped or SDK-format changes.
+            write_message_event(
+                message_log_path,
+                "ai_message",
+                {"message": response_data},
+                state,
+            )
 
 
 async def worker_loop(
@@ -245,7 +375,7 @@ def claude_worker_main(
     message_log_path: str,
     state_path: str,
 ) -> None:
-    options = build_default_options()
+    options = build_default_options(Path(message_log_path))
     asyncio.run(
         worker_loop(
             notify_queue=notify_queue,
