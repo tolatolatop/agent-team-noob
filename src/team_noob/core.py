@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
 NotifyHook = Callable[[dict[str, Any]], None]
 
 
 class NotifyServer:
-    """最简 HTTP 服务器，仅提供 /notify 接口。"""
+    """最简 HTTP 服务器，提供 /notify 与 /messages 接口。"""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8000) -> None:
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        message_log_path: str | Path = "agent_messages.jsonl",
+    ) -> None:
         self.host = host
         self.port = port
+        self.message_log_path = Path(message_log_path)
         self._hooks: list[NotifyHook] = []
 
     def add_hook(self, hook: NotifyHook) -> None:
@@ -31,8 +39,24 @@ class NotifyServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _read_latest_messages(self, limit: int) -> list[dict[str, Any]]:
+                path = server.message_log_path
+                if not path.exists():
+                    return []
+                lines = path.read_text(encoding="utf-8").splitlines()
+                records: list[dict[str, Any]] = []
+                for line in lines[-limit:]:
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(item, dict):
+                        records.append(item)
+                return records
+
             def do_POST(self) -> None:  # noqa: N802
-                if self.path != "/notify":
+                parsed = urlparse(self.path)
+                if parsed.path != "/notify":
                     self._write_json(404, {"ok": False, "error": "not found"})
                     return
 
@@ -62,8 +86,32 @@ class NotifyServer:
                 self._write_json(200, {"ok": True})
 
             def do_GET(self) -> None:  # noqa: N802
-                if self.path == "/notify":
+                parsed = urlparse(self.path)
+                if parsed.path == "/notify":
                     self._write_json(405, {"ok": False, "error": "use POST /notify"})
+                    return
+                if parsed.path == "/messages":
+                    query = parse_qs(parsed.query)
+                    raw_limit = query.get("limit", ["100"])[0]
+                    try:
+                        limit = int(raw_limit)
+                    except ValueError:
+                        self._write_json(400, {"ok": False, "error": "limit must be int"})
+                        return
+                    if limit <= 0:
+                        self._write_json(400, {"ok": False, "error": "limit must be > 0"})
+                        return
+                    limit = min(limit, 1000)
+                    messages = self._read_latest_messages(limit)
+                    self._write_json(
+                        200,
+                        {
+                            "ok": True,
+                            "messages": messages,
+                            "count": len(messages),
+                            "limit": limit,
+                        },
+                    )
                     return
                 self._write_json(404, {"ok": False, "error": "not found"})
 

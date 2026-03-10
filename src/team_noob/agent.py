@@ -419,7 +419,7 @@ def run_service(host: str = "127.0.0.1", port: int = 8000) -> None:
         worker.pid,
         DEFAULT_PIPELINE,
     )
-    server = NotifyServer(host=host, port=port)
+    server = NotifyServer(host=host, port=port, message_log_path=message_log_path)
     server.add_hook(create_notify_hook(notify_queue))
     try:
         server.run()

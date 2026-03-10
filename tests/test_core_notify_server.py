@@ -5,6 +5,7 @@ import json
 import multiprocessing as mp
 import socket
 import time
+from pathlib import Path
 from typing import Any
 
 from team_noob.core import NotifyServer
@@ -18,8 +19,8 @@ def _find_free_port() -> int:
     return port
 
 
-def _run_server(port: int, mode: str) -> None:
-    server = NotifyServer(host="127.0.0.1", port=port)
+def _run_server(port: int, mode: str, message_log_path: str = "agent_messages.jsonl") -> None:
+    server = NotifyServer(host="127.0.0.1", port=port, message_log_path=message_log_path)
     if mode == "value_error":
         server.add_hook(lambda _payload: (_ for _ in ()).throw(ValueError("bad pipeline")))
     elif mode == "runtime_error":
@@ -122,6 +123,40 @@ def test_notify_server_maps_generic_error_to_500() -> None:
         assert status == 500
         assert payload["ok"] is False
         assert "hook failed" in payload["error"]
+    finally:
+        proc.terminate()
+        proc.join(timeout=2)
+
+
+def test_messages_endpoint_returns_latest_100_by_default(tmp_path: Path) -> None:
+    port = _find_free_port()
+    message_log = tmp_path / "agent_messages.jsonl"
+    for i in range(1, 121):
+        line = json.dumps({"seq": i, "type": "query"})
+        message_log.write_text(
+            (message_log.read_text(encoding="utf-8") + line + "\n")
+            if message_log.exists()
+            else (line + "\n"),
+            encoding="utf-8",
+        )
+
+    proc = mp.Process(target=_run_server, args=(port, "ok", str(message_log)), daemon=True)
+    proc.start()
+    try:
+        _wait_server_ready(port)
+        status, payload = _request_json(port, "GET", "/messages")
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["count"] == 100
+        assert payload["limit"] == 100
+        assert payload["messages"][0]["seq"] == 21
+        assert payload["messages"][-1]["seq"] == 120
+
+        status_limit, payload_limit = _request_json(port, "GET", "/messages?limit=5")
+        assert status_limit == 200
+        assert payload_limit["count"] == 5
+        assert payload_limit["messages"][0]["seq"] == 116
+        assert payload_limit["messages"][-1]["seq"] == 120
     finally:
         proc.terminate()
         proc.join(timeout=2)
