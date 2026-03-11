@@ -2,6 +2,7 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-team-noob:latest}"
+BUILD_TARGET="${BUILD_TARGET:-deploy}"
 CONTAINER_NAME="${CONTAINER_NAME:-team-noob}"
 HOST_PORT="${HOST_PORT:-8000}"
 PORT="${PORT:-8000}"
@@ -18,7 +19,7 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 echo "[1/5] Building image: ${IMAGE_NAME}"
-docker build -t "${IMAGE_NAME}" .
+docker build --target "${BUILD_TARGET}" -t "${IMAGE_NAME}" .
 
 if docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
   echo "[2/5] Removing existing container: ${CONTAINER_NAME}"

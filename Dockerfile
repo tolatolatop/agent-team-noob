@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim as base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -34,3 +34,15 @@ EXPOSE 8000
 USER ${APP_USER}
 
 CMD ["./entrypoint.sh"]
+
+FROM base as deploy
+
+USER root
+ARG APP_USER=appuser
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm curl wget git \
+    && pip install --no-cache-dir uv \
+    && rm -rf /var/lib/apt/lists/*
+
+USER ${APP_USER}

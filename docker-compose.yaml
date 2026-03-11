@@ -4,6 +4,7 @@ x-team-noob-app: &team_noob_app
   build:
     context: .
     dockerfile: Dockerfile
+    target: deploy
   restart: unless-stopped
   env_file: .env
   networks:
