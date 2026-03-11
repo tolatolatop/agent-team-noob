@@ -11,6 +11,9 @@ dependencies = [
     "claude-agent-sdk (>=0.1.44,<0.2.0)"
 ]
 
+[project.scripts]
+team-noob-cli = "team_noob.cli:main"
+
 [tool.poetry]
 packages = [{include = "team_noob", from = "src"}]
 
