@@ -3,7 +3,8 @@ FROM python:3.12-slim as base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
-    PORT=8000
+    PORT=8000 \
+    PATH="/home/appuser/.local/bin:${PATH}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends sudo \
@@ -46,3 +47,4 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 USER ${APP_USER}
+RUN uv tool install git+https://github.com/tolatolatop/bbs-cli.git
