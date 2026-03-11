@@ -135,7 +135,9 @@ def load_options(path: Path) -> ClaudeAgentOptions:
 
 
 def build_hooks(message_log_path: Path):
-    async def audit_hook(input_data: Any, tool_use_id: Any, context: Any) -> dict[str, Any]:
+    async def audit_hook(
+        input_data: Any, tool_use_id: Any, context: Any
+    ) -> dict[str, Any]:
         event_name = input_data.get("hook_event_name", "")
         tool_name = input_data.get("tool_name")
         payload = {
@@ -188,7 +190,7 @@ def build_default_options(message_log_path: Path | None = None) -> ClaudeAgentOp
     )
     return ClaudeAgentOptions(
         allowed_tools=["Read", "Grep"],
-        permission_mode="acceptEdits",
+        permission_mode="bypassPermissions",
         hooks=hooks,
     )
 
@@ -349,7 +351,9 @@ async def worker_loop(
                 logger.warning("unknown kind=%r", kind)
                 continue
             payload = envelope.get("payload")
-            content = read_content_from_notify(payload) if isinstance(payload, dict) else None
+            content = (
+                read_content_from_notify(payload) if isinstance(payload, dict) else None
+            )
             if not content:
                 logger.warning("skip notify payload without content")
                 continue
