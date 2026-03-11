@@ -192,6 +192,7 @@ def build_default_options(message_log_path: Path | None = None) -> ClaudeAgentOp
         allowed_tools=["Read", "Grep"],
         permission_mode="bypassPermissions",
         hooks=hooks,
+        cwd=Path.home(),
     )
 
 
