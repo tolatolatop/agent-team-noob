@@ -1,0 +1,27 @@
+version: "3.9"
+
+x-team-noob-app: &team_noob_app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  env_file: .env
+  networks:
+    - app_internal
+
+services:
+  app1:
+    <<: *team_noob_app
+    container_name: team-noob-app1
+
+  app2:
+    <<: *team_noob_app
+    container_name: team-noob-app2
+
+  app3:
+    <<: *team_noob_app
+    container_name: team-noob-app3
+
+networks:
+  app_internal:
+    internal: true
