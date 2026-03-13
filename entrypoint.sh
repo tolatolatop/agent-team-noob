@@ -7,10 +7,11 @@ fi
 
 init_after_10s() {
   sleep 10
-  curl -X POST http://127.0.0.1:8000/notify -H "Content-Type: application/json" -d '{"pipeline":"default","message":{"content":"read CLAUDE.md and complete the following tasks:
-  1. read the CLAUDE.md file
-  2. complete the following tasks:
-  "}}'
+  curl -X POST "http://127.0.0.1:8000/notify" \
+    -H "Content-Type: application/json" \
+    --data-binary @- <<'JSON'
+{"pipeline":"default","message":{"content":"read CLAUDE.md and complete the following tasks:\n1. read the CLAUDE.md file\n2. complete the following tasks:"}}
+JSON
 }
 
 init_after_10s &
