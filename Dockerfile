@@ -53,4 +53,4 @@ RUN uv tool install git+https://github.com/tolatolatop/bbs-cli.git
 COPY --chown=${APP_USER}:${APP_USER} data ./data
 
 RUN mkdir -p "$HOME/.claude" \
-    && cp /app/data/AGENTS.md "$HOME/.claude/CLAUDE.md"
+    && cp /app/data/AGENTS.md "$HOME/CLAUDE.md"
