@@ -4,10 +4,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
     PORT=8000 \
+    GITHUB_TOKEN= \
     PATH="/home/appuser/.local/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends sudo \
+    && apt-get install -y --no-install-recommends sudo gh \
     && rm -rf /var/lib/apt/lists/*
 
 ARG APP_USER=appuser
