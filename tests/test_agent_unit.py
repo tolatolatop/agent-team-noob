@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -233,7 +234,16 @@ def test_worker_loop_restart_loads_session_and_compacts_once(
     assert isinstance(instance.options, DummyOptions)
     assert instance.options.session_id == "sess-old"
     assert instance.query_contents.count("/compact") == 1
-    assert "hello2" in instance.query_contents
+    xml_query = next((item for item in instance.query_contents if "<agent_message>" in item), "")
+    assert xml_query
+    assert "<content>hello2</content>" in xml_query
+    received_at = re.search(r"<received_at>([^<]+)</received_at>", xml_query)
+    current_time = re.search(r"<current_time>([^<]+)</current_time>", xml_query)
+    assert received_at is not None
+    assert current_time is not None
+    # 秒级时间格式：不包含小数秒
+    assert "." not in received_at.group(1)
+    assert "." not in current_time.group(1)
 
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state["session_id"] == "sess-new"
