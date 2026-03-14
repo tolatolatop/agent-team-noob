@@ -6,6 +6,7 @@ import logging
 import multiprocessing as mp
 import os
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -40,6 +41,20 @@ Envelope = dict[str, Any]
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def utc_now_iso_seconds() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def build_notify_xml_message(content: str, received_at: str, current_time: str) -> str:
+    return (
+        "<agent_message>\n"
+        f"  <content>{escape(content)}</content>\n"
+        f"  <received_at>{escape(received_at)}</received_at>\n"
+        f"  <current_time>{escape(current_time)}</current_time>\n"
+        "</agent_message>"
+    )
 
 
 def append_jsonl(path: Path, event: dict[str, Any]) -> None:
@@ -358,8 +373,17 @@ async def worker_loop(
             if not content:
                 logger.warning("skip notify payload without content")
                 continue
+            received_at = envelope.get("received_at")
+            if not isinstance(received_at, str) or not received_at:
+                received_at = utc_now_iso_seconds()
+            current_time = utc_now_iso_seconds()
+            xml_content = build_notify_xml_message(
+                content=content,
+                received_at=received_at,
+                current_time=current_time,
+            )
             try:
-                await run_agent_query_receive(client, content, message_log_path, state)
+                await run_agent_query_receive(client, xml_content, message_log_path, state)
                 state["updated_at"] = utc_now_iso()
                 save_state(state_path, state)
             except Exception as exc:  # noqa: BLE001
@@ -401,6 +425,7 @@ def create_notify_hook(notify_queue: mp.Queue):
                 "kind": "notify",
                 "pipeline": DEFAULT_PIPELINE,
                 "payload": payload,
+                "received_at": utc_now_iso_seconds(),
             }
         )
 
